@@ -1,6 +1,6 @@
 # sqlite-vec for PHP
 
-PHP bindings for [sqlite-vec](https://github.com/asg017/sqlite-vec) — a vector search extension for SQLite.
+PHP support for [sqlite-vec](https://github.com/asg017/sqlite-vec); a vector search extension for SQLite.
 
 Ships pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, Apple Silicon), and Windows (x86_64). No compilation needed.
 
