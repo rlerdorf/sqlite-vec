@@ -1,6 +1,6 @@
 {
     "name": "sqlite-vec/sqlite-vec",
-    "description": "PHP bindings for sqlite-vec: vector search for SQLite",
+    "description": "PHP support for sqlite-vec: vector search for SQLite",
     "type": "library",
     "license": ["MIT", "Apache-2.0"],
     "keywords": ["sqlite", "vector", "search", "embedding", "knn"],
