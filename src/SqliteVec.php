@@ -103,6 +103,13 @@ final class SqliteVec
         if ($vector === []) {
             throw new InvalidArgumentException('Vector must not be empty.');
         }
+        foreach ($vector as $i => $v) {
+            if ($v < -128 || $v > 127) {
+                throw new InvalidArgumentException(
+                    "Int8 value at index {$i} is {$v}, must be in [-128, 127]."
+                );
+            }
+        }
         return pack('c*', ...$vector);
     }
 

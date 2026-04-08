@@ -61,6 +61,13 @@ class SqliteVecTest extends TestCase
         SqliteVec::serializeInt8([]);
     }
 
+    public function testSerializeInt8OutOfRange(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be in [-128, 127]');
+        SqliteVec::serializeInt8([0, 128]);
+    }
+
     public function testDeserializeInt8Empty(): void
     {
         $this->expectException(InvalidArgumentException::class);

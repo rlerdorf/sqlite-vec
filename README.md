@@ -35,7 +35,8 @@ This detects your PHP ini scan directories and writes a config file pointing `sq
 use SqliteVec\SqliteVec;
 
 // PDO (PHP 8.4+) — zero config
-$db = new \Pdo\Sqlite('sqlite::memory:');
+// Note: the DSN needs the "sqlite:" prefix even with \Pdo\Sqlite
+$db = new \Pdo\Sqlite('sqlite::memory:');  // or 'sqlite:/path/to/db.sqlite'
 SqliteVec::load($db);
 
 // SQLite3 — requires sqlite-vec-setup first
@@ -61,6 +62,8 @@ $vectors = [
 ];
 foreach ($vectors as $id => $vec) {
     $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+    // Important: use PARAM_LOB, not PARAM_STR — PARAM_STR causes SQLite to
+    // interpret the binary blob as text, producing silent garbage results.
     $stmt->bindValue(':emb', SqliteVec::serializeFloat32($vec), PDO::PARAM_LOB);
     $stmt->execute();
 }
@@ -70,7 +73,7 @@ $query = SqliteVec::serializeFloat32([1.0, 0.1, 0.0, 0.0]);
 $stmt = $db->prepare(
     'SELECT rowid, distance FROM vec_items WHERE embedding MATCH :q ORDER BY distance LIMIT 3'
 );
-$stmt->bindValue(':q', $query, PDO::PARAM_LOB);
+$stmt->bindValue(':q', $query, PDO::PARAM_LOB);  // Must be PARAM_LOB
 $stmt->execute();
 
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
