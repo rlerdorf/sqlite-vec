@@ -1,0 +1,279 @@
+#!/usr/bin/env php
+<?php
+/**
+ * sqlite-vec-setup: Configure PHP to load the sqlite-vec SQLite extension.
+ *
+ * Usage:
+ *   vendor/bin/sqlite-vec-setup              # configure all detected SAPIs
+ *   sudo vendor/bin/sqlite-vec-setup         # same, with write access to system dirs
+ *   vendor/bin/sqlite-vec-setup --dry-run    # show what would be done
+ *   vendor/bin/sqlite-vec-setup --remove     # remove generated ini files
+ *   vendor/bin/sqlite-vec-setup --status     # show current configuration
+ */
+
+declare(strict_types=1);
+
+require_once dirname(__DIR__) . '/src/SqliteVec.php';
+
+(new class {
+    private bool $dryRun = false;
+    private bool $remove = false;
+    private bool $status = false;
+    private string $extensionDir;
+    private string $iniFilename = '99-sqlite-vec.ini';
+
+    public function run(array $argv): int
+    {
+        $this->parseArgs($argv);
+
+        try {
+            $this->extensionDir = dirname(\SqliteVec\SqliteVec::extensionPath());
+        } catch (\RuntimeException $e) {
+            $this->error($e->getMessage());
+            return 1;
+        }
+
+        if ($this->status) {
+            return $this->showStatus();
+        }
+
+        $scanDirs = $this->findScanDirs();
+
+        if ($scanDirs === []) {
+            $this->error('No PHP ini scan directories found.');
+            $this->info('You can manually add this line to your php.ini:');
+            $this->info("  sqlite3.extension_dir = {$this->extensionDir}");
+            return 1;
+        }
+
+        $this->info('Extension binary: ' . $this->extensionDir);
+        $this->info('');
+
+        $wrote = 0;
+        foreach ($scanDirs as $dir) {
+            $result = $this->remove
+                ? $this->removeIniFile($dir)
+                : $this->writeIniFile($dir);
+            if ($result) {
+                $wrote++;
+            }
+        }
+
+        if ($wrote === 0 && !$this->remove) {
+            $this->info('Everything is already configured.');
+        }
+
+        if ($wrote > 0 && !$this->dryRun) {
+            $this->info('');
+            if ($this->hasFpmSapi($scanDirs)) {
+                $this->info('Restart PHP-FPM to apply: sudo systemctl restart php*-fpm');
+            }
+        }
+
+        return 0;
+    }
+
+    private function parseArgs(array $argv): void
+    {
+        foreach (array_slice($argv, 1) as $arg) {
+            match ($arg) {
+                '--dry-run' => $this->dryRun = true,
+                '--remove' => $this->remove = true,
+                '--status' => $this->status = true,
+                '--help', '-h' => $this->usage(),
+                default => null,
+            };
+        }
+    }
+
+    private function usage(): never
+    {
+        echo <<<'USAGE'
+        Usage: sqlite-vec-setup [OPTIONS]
+
+        Options:
+          --dry-run   Show what would be done without writing
+          --remove    Remove generated ini files
+          --status    Show current sqlite3.extension_dir configuration
+          --help      Show this help
+
+        USAGE;
+        exit(0);
+    }
+
+    private function showStatus(): int
+    {
+        $current = ini_get('sqlite3.extension_dir');
+
+        $this->info('Platform binary:   ' . $this->extensionDir);
+        $this->info('extension_dir:     ' . ($current ?: '(not set)'));
+
+        if ($current !== '' && $current !== false) {
+            $resolved = realpath($current);
+            if ($resolved === false) {
+                $this->warn("  Warning: directory does not exist: {$current}");
+            } elseif ($resolved !== realpath($this->extensionDir)) {
+                $this->warn("  Warning: points to a different directory than the bundled binary.");
+                $this->warn("  Bundled: {$this->extensionDir}");
+                $this->warn("  Current: {$resolved}");
+            } else {
+                $this->info('  Status: correctly configured');
+            }
+        } else {
+            $this->warn('  Not configured. Run: sudo vendor/bin/sqlite-vec-setup');
+        }
+
+        $this->info('');
+        $scanDirs = $this->findScanDirs();
+        $this->info('Detected ini scan directories:');
+        foreach ($scanDirs as $dir) {
+            $iniPath = $dir . '/' . $this->iniFilename;
+            $exists = file_exists($iniPath) ? ' [installed]' : '';
+            $this->info("  {$dir}{$exists}");
+        }
+        if ($scanDirs === []) {
+            $this->info('  (none found)');
+        }
+
+        return 0;
+    }
+
+    /** @return string[] */
+    private function findScanDirs(): array
+    {
+        $dirs = [];
+
+        // Method 1: Current PHP's scan dir
+        $scanned = php_ini_scanned_files();
+        if ($scanned !== false && $scanned !== '') {
+            $firstFile = explode(',', $scanned)[0];
+            $dir = dirname(trim($firstFile));
+            if (is_dir($dir)) {
+                $dirs[] = $dir;
+            }
+        }
+
+        // Method 2: Known distro paths
+        $phpVersion = PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
+        $knownPatterns = [
+            "/etc/php/{$phpVersion}/*/conf.d",   // Debian/Ubuntu
+            '/etc/php.d',                          // RHEL/CentOS/Fedora
+            '/etc/php/conf.d',                     // Alpine
+            '/opt/homebrew/etc/php/*/conf.d',      // macOS Homebrew ARM
+            '/usr/local/etc/php/*/conf.d',         // macOS Homebrew Intel / Docker
+        ];
+
+        foreach ($knownPatterns as $pattern) {
+            foreach (glob($pattern, GLOB_ONLYDIR) as $dir) {
+                $dirs[] = $dir;
+            }
+        }
+
+        return array_values(array_unique(array_filter($dirs, 'is_dir')));
+    }
+
+    private function writeIniFile(string $scanDir): bool
+    {
+        $iniPath = $scanDir . '/' . $this->iniFilename;
+
+        // Check for existing sqlite3.extension_dir set elsewhere
+        $conflict = $this->findExistingExtensionDir($scanDir);
+        if ($conflict !== null && $conflict !== $iniPath) {
+            $this->warn("  {$scanDir}:");
+            $this->warn("    sqlite3.extension_dir is already set in {$conflict}");
+            $this->warn("    To use sqlite-vec, either:");
+            $this->warn("    1. Copy the binary: cp " . $this->extensionDir . '/vec0.* ' . trim(shell_exec("php -r \"echo ini_get('sqlite3.extension_dir');\"") ?: '(unknown)') . '/');
+            $this->warn("    2. Or remove the existing setting and re-run this script");
+            return false;
+        }
+
+        $content = <<<INI
+        ; sqlite-vec extension configuration
+        ; Generated by sqlite-vec-setup — do not edit manually.
+        ; Binary: {$this->extensionDir}
+        sqlite3.extension_dir = {$this->extensionDir}
+        INI;
+
+        // Check if already correct
+        if (file_exists($iniPath) && trim(file_get_contents($iniPath)) === trim($content)) {
+            $this->info("  {$iniPath} — already up to date");
+            return false;
+        }
+
+        if ($this->dryRun) {
+            $this->info("  Would write: {$iniPath}");
+            return true;
+        }
+
+        if (@file_put_contents($iniPath, $content . "\n") === false) {
+            $this->error("  Failed to write {$iniPath} — re-run with sudo?");
+            return false;
+        }
+
+        $this->info("  Wrote: {$iniPath}");
+        return true;
+    }
+
+    private function removeIniFile(string $scanDir): bool
+    {
+        $iniPath = $scanDir . '/' . $this->iniFilename;
+
+        if (!file_exists($iniPath)) {
+            return false;
+        }
+
+        if ($this->dryRun) {
+            $this->info("  Would remove: {$iniPath}");
+            return true;
+        }
+
+        if (!@unlink($iniPath)) {
+            $this->error("  Failed to remove {$iniPath} — re-run with sudo?");
+            return false;
+        }
+
+        $this->info("  Removed: {$iniPath}");
+        return true;
+    }
+
+    private function findExistingExtensionDir(string $scanDir): ?string
+    {
+        foreach (glob($scanDir . '/*.ini') as $iniFile) {
+            if (basename($iniFile) === $this->iniFilename) {
+                continue;
+            }
+            $contents = file_get_contents($iniFile);
+            if ($contents !== false && preg_match('/^\s*sqlite3\.extension_dir\s*=/m', $contents)) {
+                return $iniFile;
+            }
+        }
+        return null;
+    }
+
+    private function hasFpmSapi(array $scanDirs): bool
+    {
+        foreach ($scanDirs as $dir) {
+            if (str_contains($dir, 'fpm')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function info(string $message): void
+    {
+        echo $message . PHP_EOL;
+    }
+
+    private function warn(string $message): void
+    {
+        $fd = defined('STDERR') ? STDERR : fopen('php://stderr', 'w');
+        fwrite($fd, "\033[33m{$message}\033[0m" . PHP_EOL);
+    }
+
+    private function error(string $message): void
+    {
+        $fd = defined('STDERR') ? STDERR : fopen('php://stderr', 'w');
+        fwrite($fd, "\033[31m{$message}\033[0m" . PHP_EOL);
+    }
+})->run($argv);
