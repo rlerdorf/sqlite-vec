@@ -4,7 +4,7 @@
     "type": "library",
     "license": ["MIT", "Apache-2.0"],
     "keywords": ["sqlite", "vector", "search", "embedding", "knn"],
-    "homepage": "https://github.com/asg017/sqlite-vec",
+    "homepage": "https://github.com/rlerdorf/sqlite-vec",
     "require": {
         "php": ">=8.1"
     },
